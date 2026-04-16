@@ -1,5 +1,25 @@
+// PATCH: footer — delegate to footer-enhanced.mjs for enhanced usage footer
+import { createRequire } from "node:module";
 import { estimateUsageCost, formatTokenCount, formatUsd } from "../../utils/usage-format.js";
 import type { ReplyPayload } from "../types.js";
+
+const _require = createRequire(import.meta.url);
+const FOOTER_PATH =
+  "/home/ubuntu/.openclaw/workspace/projects/openclaw-patches/footer/footer-enhanced.mjs";
+let _genFooter: ((p: Record<string, unknown>) => string | null) | null = null;
+
+function _loadFooter(): typeof _genFooter {
+  if (_genFooter !== null) {
+    return _genFooter;
+  }
+  try {
+    const mod = _require(FOOTER_PATH);
+    _genFooter = mod.generateFooter ?? null;
+  } catch {
+    _genFooter = null;
+  }
+  return _genFooter;
+}
 
 export const formatResponseUsageLine = (params: {
   usage?: {
@@ -15,7 +35,31 @@ export const formatResponseUsageLine = (params: {
     cacheRead: number;
     cacheWrite: number;
   };
+  /** PATCH: footer — extra params for enhanced footer */
+  contextTokens?: number;
+  lastCallUsage?: Record<string, unknown>;
+  sessionKey?: string;
+  systemPromptReport?: Record<string, unknown>;
 }): string | null => {
+  // Try enhanced footer first
+  const gen = _loadFooter();
+  if (gen) {
+    try {
+      const result = gen({
+        ...params,
+        formatTokenCount,
+        estimateUsageCost,
+        formatUsd,
+      });
+      if (result) {
+        return result;
+      }
+    } catch {
+      // Fall through to default
+    }
+  }
+
+  // Default footer (fallback if footer-enhanced.mjs unavailable)
   const usage = params.usage;
   if (!usage) {
     return null;

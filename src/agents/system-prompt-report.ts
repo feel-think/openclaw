@@ -138,5 +138,24 @@ export function buildSystemPromptReport(params: {
       schemaChars: toolsSchemaChars,
       entries: toolsEntries,
     },
+    // PATCH: footer — raw text for precise tokenization
+    _rawSystemPrompt: systemPrompt,
+    _rawSkillsPrompt: params.skillsPrompt,
+    _rawToolsJson: (() => {
+      try {
+        return JSON.stringify(
+          params.tools.map((t) => ({
+            type: "function",
+            function: {
+              name: t.name,
+              description: t.description || "",
+              parameters: t.parameters || {},
+            },
+          })),
+        );
+      } catch {
+        return "";
+      }
+    })(),
   };
 }

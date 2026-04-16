@@ -387,6 +387,10 @@ export type SessionSystemPromptReport = {
       propertiesCount?: number | null;
     }>;
   };
+  /** PATCH: footer — raw text for precise tokenization */
+  _rawSystemPrompt?: string;
+  _rawSkillsPrompt?: string;
+  _rawToolsJson?: string;
 };
 
 export const DEFAULT_RESET_TRIGGER = "/new";
