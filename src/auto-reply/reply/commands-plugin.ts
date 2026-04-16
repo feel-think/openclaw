@@ -48,6 +48,8 @@ export const handlePluginCommand: CommandHandler = async (
       typeof params.ctx.MessageThreadId === "number"
         ? params.ctx.MessageThreadId
         : undefined,
+    // PATCH: lcm-doctor | Forward sessionKey for LCM doctor command
+    sessionKey: params.ctx.SessionKey,
   });
 
   return {
