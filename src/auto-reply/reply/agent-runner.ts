@@ -1450,6 +1450,10 @@ export async function runReplyAgent(params: {
         usage,
         showCost,
         costConfig,
+        contextTokens: contextTokensUsed,
+        lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
+        sessionKey,
+        systemPromptReport: runResult.meta?.systemPromptReport,
       });
       if (formatted && responseUsageMode === "full" && sessionKey) {
         formatted = `${formatted} · session \`${sessionKey}\``;

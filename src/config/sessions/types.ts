@@ -494,6 +494,9 @@ export type SessionSystemPromptReport = {
       propertiesCount?: number | null;
     }>;
   };
+  _rawSystemPrompt?: string;
+  _rawSkillsPrompt?: string;
+  _rawToolsJson?: string;
 };
 
 export const DEFAULT_RESET_TRIGGER = "/new";
