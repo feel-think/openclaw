@@ -62,6 +62,7 @@ import {
   getMemoryRuntime,
   listMemoryCorpusSupplements,
   listMemoryPromptSupplements,
+  mergeMemoryPluginState,
   restoreMemoryPluginState,
 } from "./memory-state.js";
 import { unwrapDefaultModuleExport } from "./module-export.js";
@@ -1281,7 +1282,8 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       restoreRegisteredAgentHarnesses(cached.agentHarnesses);
       restoreRegisteredCompactionProviders(cached.compactionProviders);
       restoreRegisteredMemoryEmbeddingProviders(cached.memoryEmbeddingProviders);
-      restoreMemoryPluginState({
+      // PATCH: wiki-bridge-fix | use merge instead of restore on cache-hit path
+      mergeMemoryPluginState({
         capability: cached.memoryCapability,
         corpusSupplements: cached.memoryCorpusSupplements,
         promptBuilder: cached.memoryPromptBuilder,
@@ -2055,6 +2057,8 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       const previousMemoryCorpusSupplements = listMemoryCorpusSupplements();
       const previousMemoryPromptSupplements = listMemoryPromptSupplements();
       const previousMemoryRuntime = getMemoryRuntime();
+      const previousMemoryCapability = getMemoryCapabilityRegistration();
+      // PATCH: wiki-bridge-fix | save capability before register to prevent snapshot revert from clearing it
 
       try {
         const result = register(api);
@@ -2072,6 +2076,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           restoreRegisteredCompactionProviders(previousCompactionProviders);
           restoreRegisteredMemoryEmbeddingProviders(previousMemoryEmbeddingProviders);
           restoreMemoryPluginState({
+            capability: previousMemoryCapability,
             corpusSupplements: previousMemoryCorpusSupplements,
             promptBuilder: previousMemoryPromptBuilder,
             promptSupplements: previousMemoryPromptSupplements,
@@ -2086,6 +2091,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
         restoreRegisteredCompactionProviders(previousCompactionProviders);
         restoreRegisteredMemoryEmbeddingProviders(previousMemoryEmbeddingProviders);
         restoreMemoryPluginState({
+          capability: previousMemoryCapability,
           corpusSupplements: previousMemoryCorpusSupplements,
           promptBuilder: previousMemoryPromptBuilder,
           promptSupplements: previousMemoryPromptSupplements,

@@ -36,6 +36,9 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
   { commandPath: ["directory"], policy: { loadPlugins: "always" } },
   { commandPath: ["agents"], policy: { loadPlugins: "always" } },
   { commandPath: ["configure"], policy: { loadPlugins: "always" } },
+  // PATCH: wiki-bridge-fix | CLI wiki/memory commands need all plugins loaded for bridge artifacts
+  { commandPath: ["wiki"], policy: { loadPlugins: "always" } },
+  { commandPath: ["memory"], policy: { loadPlugins: "always" } },
   {
     commandPath: ["status"],
     policy: {

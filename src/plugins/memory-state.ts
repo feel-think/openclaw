@@ -301,6 +301,33 @@ export async function listActiveMemoryPublicArtifacts(params: {
   });
 }
 
+// PATCH: wiki-bridge-fix | merge: additive for cache-hit, preserve live capability
+export function mergeMemoryPluginState(state: Partial<MemoryPluginState>): void {
+  if (state.capability !== undefined) {
+    memoryPluginState.capability = state.capability
+      ? {
+          pluginId: state.capability.pluginId,
+          capability: { ...state.capability.capability },
+        }
+      : undefined;
+  }
+  if (state.corpusSupplements !== undefined) {
+    memoryPluginState.corpusSupplements = [...state.corpusSupplements];
+  }
+  if (state.promptBuilder !== undefined) {
+    memoryPluginState.promptBuilder = state.promptBuilder;
+  }
+  if (state.promptSupplements !== undefined) {
+    memoryPluginState.promptSupplements = [...state.promptSupplements];
+  }
+  if (state.flushPlanResolver !== undefined) {
+    memoryPluginState.flushPlanResolver = state.flushPlanResolver;
+  }
+  if (state.runtime !== undefined) {
+    memoryPluginState.runtime = state.runtime;
+  }
+}
+
 export function restoreMemoryPluginState(state: MemoryPluginState): void {
   memoryPluginState.capability = state.capability
     ? {
