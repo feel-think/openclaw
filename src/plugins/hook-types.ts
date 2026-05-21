@@ -308,6 +308,12 @@ export type PluginHookAgentEndEvent = {
   success: boolean;
   error?: string;
   durationMs?: number;
+  // PATCH: turn-footer plugin | expose raw usage and session data for plugin footer generation
+  usage?: Record<string, number>;
+  lastCallUsage?: Record<string, number>;
+  systemPromptReport?: Record<string, unknown>;
+  contextTokenBudget?: number;
+  model?: string;
 };
 
 export type PluginHookBeforeAgentFinalizeEvent = {
