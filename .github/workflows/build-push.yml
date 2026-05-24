@@ -4,14 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: '分支或 tag (如 patches/v2026.5.19)'
+        description: '分支名 (如 wip-build)'
         required: true
         type: string
-      gist_url:
-        description: '未提交改动的 gist URL (可选)'
-        required: false
-        type: string
-        default: ''
 
 jobs:
   build:
@@ -30,11 +25,6 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-
-      - name: Apply gist patch
-        if: inputs.gist_url != ''
-        run: |
-          curl -sL "${{ inputs.gist_url }}/raw" | git apply
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
