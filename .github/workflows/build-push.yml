@@ -1,0 +1,55 @@
+name: Build and Push
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '分支或 tag (如 patches/v2026.5.19)'
+        required: true
+        type: string
+      gist_url:
+        description: '未提交改动的 gist URL (可选)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Apply gist patch
+        if: inputs.gist_url != ''
+        run: |
+          curl -sL "${{ inputs.gist_url }}/raw" | git apply
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Build UI
+        run: pnpm ui:build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-dist
+          path: |
+            dist/
+            ui/dist/
+          retention-days: 1
