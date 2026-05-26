@@ -2756,11 +2756,16 @@ export async function runEmbeddedPiAgent(
           const payloadCount = payloadsForTerminalPath?.length ?? 0;
           const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
             allowEmptyAssistantReplyAsSilent: params.allowEmptyAssistantReplyAsSilent,
+            modelId: activeErrorContext.model,
             payloadCount,
             aborted,
             timedOut,
             attempt,
+            diagnosticTrace: attempt.diagnosticTrace as Record<string, unknown> | undefined,
           });
+          log.warn(
+            `retry-decision pipeline entry | traceId=${(attempt.diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} allowEmptyAssistantReplyAsSilent=${params.allowEmptyAssistantReplyAsSilent} payloadCount=${payloadCount} emptyAssistantReplyIsSilent=${emptyAssistantReplyIsSilent}`,
+          );
           const nextPlanningOnlyRetryInstruction = emptyAssistantReplyIsSilent
             ? null
             : resolvePlanningOnlyRetryInstruction({
@@ -2771,6 +2776,7 @@ export async function runEmbeddedPiAgent(
                 aborted,
                 timedOut,
                 attempt,
+                diagnosticTrace: attempt.diagnosticTrace as Record<string, unknown> | undefined,
               });
           const nextReasoningOnlyRetryInstruction = emptyAssistantReplyIsSilent
             ? null
@@ -2781,6 +2787,7 @@ export async function runEmbeddedPiAgent(
                 executionContract,
                 aborted,
                 timedOut,
+                diagnosticTrace: attempt.diagnosticTrace as Record<string, unknown>,
                 attempt,
               });
           const nextEmptyResponseRetryInstruction = emptyAssistantReplyIsSilent
@@ -2794,6 +2801,7 @@ export async function runEmbeddedPiAgent(
                 aborted,
                 timedOut,
                 attempt,
+                diagnosticTrace: attempt.diagnosticTrace as Record<string, unknown> | undefined,
               });
           if (
             nextPlanningOnlyRetryInstruction &&
@@ -2831,7 +2839,8 @@ export async function runEmbeddedPiAgent(
                 ? "strict-agentic execution contract triggered"
                 : "planning-only turn detected";
             log.warn(
-              `${planningOnlyRetryLogPrefix}: runId=${params.runId} sessionId=${params.sessionId} ` +
+              `retry-decision planning-only TRIGGERED | traceId=${(attempt.diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} ` +
+                `${planningOnlyRetryLogPrefix}: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${provider}/${modelId} harness=${sanitizeForLog(agentHarness.id)} ` +
                 `contract=${executionContract} configured=${configuredExecutionContractForLog} — retrying ` +
                 `${planningOnlyRetryAttempts}/${maxPlanningOnlyRetryAttempts} with act-now steer`,
@@ -2840,21 +2849,29 @@ export async function runEmbeddedPiAgent(
           }
           if (
             !nextPlanningOnlyRetryInstruction &&
-            nextReasoningOnlyRetryInstruction &&
+            nextReasoningOnlyRetryInstruction != null &&
             reasoningOnlyRetryAttempts < maxReasoningOnlyRetryAttempts
           ) {
             reasoningOnlyRetryAttempts += 1;
             reasoningOnlyRetryInstruction = nextReasoningOnlyRetryInstruction;
             log.warn(
-              `reasoning-only assistant turn detected: runId=${params.runId} sessionId=${params.sessionId} ` +
-                `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} ` +
-                `with visible-answer continuation`,
+              `retry-decision reasoning-only TRIGGERED | traceId=${(attempt.diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} ` +
+                `runId=${params.runId} sessionId=${params.sessionId} ` +
+                `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts}`,
             );
             continue;
           }
+          if (
+            nextReasoningOnlyRetryInstruction != null &&
+            reasoningOnlyRetryAttempts >= maxReasoningOnlyRetryAttempts
+          ) {
+            log.warn(
+              `retry-decision reasoning-only retry LIMIT_EXHAUSTED | traceId=${(attempt.diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} attempts=${reasoningOnlyRetryAttempts} max=${maxReasoningOnlyRetryAttempts}`,
+            );
+          }
           const reasoningOnlyRetriesExhausted =
             !nextPlanningOnlyRetryInstruction &&
-            nextReasoningOnlyRetryInstruction &&
+            nextReasoningOnlyRetryInstruction != null &&
             reasoningOnlyRetryAttempts >= maxReasoningOnlyRetryAttempts;
           if (
             !nextPlanningOnlyRetryInstruction &&
@@ -2865,9 +2882,9 @@ export async function runEmbeddedPiAgent(
             emptyResponseRetryAttempts += 1;
             emptyResponseRetryInstruction = nextEmptyResponseRetryInstruction;
             log.warn(
-              `empty response detected: runId=${params.runId} sessionId=${params.sessionId} ` +
-                `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${emptyResponseRetryAttempts}/${maxEmptyResponseRetryAttempts} ` +
-                `with visible-answer continuation`,
+              `retry-decision empty-response TRIGGERED | traceId=${(attempt.diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} ` +
+                `runId=${params.runId} sessionId=${params.sessionId} ` +
+                `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${emptyResponseRetryAttempts}/${maxEmptyResponseRetryAttempts}`,
             );
             continue;
           }
@@ -2905,14 +2922,14 @@ export async function runEmbeddedPiAgent(
           compactionContinuationRetryInstruction = null;
           if (reasoningOnlyRetriesExhausted && !finalAssistantVisibleText) {
             log.warn(
-              `reasoning-only retries exhausted: runId=${params.runId} sessionId=${params.sessionId} ` +
-                `provider=${activeErrorContext.provider}/${activeErrorContext.model} attempts=${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} — surfacing incomplete-turn error`,
+              `retry-decision reasoning-only EXHAUSTED | traceId=${(attempt.diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} runId=${params.runId} sessionId=${params.sessionId} ` +
+                `provider=${activeErrorContext.provider}/${activeErrorContext.model} attempts=${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts}`,
             );
           }
           if (!incompleteTurnText && nextPlanningOnlyRetryInstruction && strictAgenticActive) {
             log.warn(
-              `strict-agentic run exhausted planning-only retries: runId=${params.runId} sessionId=${params.sessionId} ` +
-                `provider=${provider}/${modelId} configured=${configuredExecutionContractForLog} — surfacing blocked state`,
+              `retry-decision planning-only EXHAUSTED | traceId=${(attempt.diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} runId=${params.runId} sessionId=${params.sessionId} ` +
+                `provider=${provider}/${modelId} configured=${configuredExecutionContractForLog}`,
             );
             // Criterion 4 of the GPT-5.4 parity gate requires every terminal
             // exit path to emit an explicit livenessState + replayInvalid so
@@ -3022,8 +3039,8 @@ export async function runEmbeddedPiAgent(
             emptyResponseRetryAttempts >= maxEmptyResponseRetryAttempts
           ) {
             log.warn(
-              `empty response retries exhausted: runId=${params.runId} sessionId=${params.sessionId} ` +
-                `provider=${activeErrorContext.provider}/${activeErrorContext.model} attempts=${emptyResponseRetryAttempts}/${maxEmptyResponseRetryAttempts} — surfacing incomplete-turn error`,
+              `retry-decision empty-response EXHAUSTED | traceId=${(attempt.diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} runId=${params.runId} sessionId=${params.sessionId} ` +
+                `provider=${activeErrorContext.provider}/${activeErrorContext.model} attempts=${emptyResponseRetryAttempts}/${maxEmptyResponseRetryAttempts}`,
             );
           }
           // ── silent-error retry ────────────────────────────────────────────

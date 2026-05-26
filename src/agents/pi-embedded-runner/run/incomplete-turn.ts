@@ -17,6 +17,7 @@ import {
   hasMessagingToolDeliveryEvidence,
 } from "../delivery-evidence.js";
 import { isZeroUsageEmptyStopAssistantTurn } from "../empty-assistant-turn.js";
+import { log } from "../logger.js";
 import { assessLastAssistantMessage } from "../thinking.js";
 import type { EmbeddedRunLivenessState } from "../types.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
@@ -415,50 +416,80 @@ function isEmptyResponseAssistantTurn(params: {
     IncompleteTurnAttempt,
     "assistantTexts" | "currentAttemptAssistant" | "lastAssistant"
   >;
+  diagnosticTrace?: Record<string, unknown> | null;
 }): boolean {
+  const traceId = params.diagnosticTrace?.traceId ?? "none";
   if (params.payloadCount !== 0) {
+    log.warn(
+      `retry-decision empty-response BLOCKED:hasPayload | traceId=${traceId} payloadCount=${params.payloadCount}`,
+    );
     return false;
   }
-  if (joinAssistantTexts(params.attempt.assistantTexts).length > 0) {
+  const assistantTextLen = joinAssistantTexts(params.attempt.assistantTexts).length;
+  if (assistantTextLen > 0) {
+    log.warn(
+      `retry-decision empty-response BLOCKED:hasText | traceId=${traceId} textLen=${assistantTextLen}`,
+    );
     return false;
   }
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
   if (!assistant) {
+    log.warn(`retry-decision empty-response PASS:noAssistant | traceId=${traceId}`);
     return true;
   }
   if (assistant.stopReason === "error") {
+    log.warn(
+      `retry-decision empty-response BLOCKED:error | traceId=${traceId} stopReason=${assistant.stopReason}`,
+    );
     return false;
   }
-  if (
-    isIncompleteTerminalAssistantTurn({
-      hasAssistantVisibleText: false,
-      lastAssistant: assistant,
-    }) ||
-    isReasoningOnlyAssistantTurn(assistant)
-  ) {
+  const incompleteTerminal = isIncompleteTerminalAssistantTurn({
+    hasAssistantVisibleText: false,
+    lastAssistant: assistant,
+  });
+  const reasoningOnly = isReasoningOnlyAssistantTurn(assistant);
+  if (incompleteTerminal || reasoningOnly) {
+    log.warn(
+      `retry-decision empty-response BLOCKED:incompleteOrReasoningOnly | traceId=${traceId} incompleteTerminal=${incompleteTerminal} reasoningOnly=${reasoningOnly}`,
+    );
     return false;
   }
+  log.warn(`retry-decision empty-response PASS:genericEmpty | traceId=${traceId}`);
   return true;
 }
 
 function isNonVisibleAssistantTurnEligibleForSilentReply(params: {
+  modelId?: string;
   payloadCount: number;
   attempt: Pick<
     IncompleteTurnAttempt,
     "assistantTexts" | "currentAttemptAssistant" | "lastAssistant"
   >;
+  diagnosticTrace?: Record<string, unknown> | null;
 }): boolean {
+  const traceId = params.diagnosticTrace?.traceId ?? "none";
   if (isEmptyResponseAssistantTurn(params)) {
+    log.warn(`retry-decision silent-eligible PASS:emptyResponse | traceId=${traceId}`);
     return true;
   }
   if (params.payloadCount !== 0) {
+    log.warn(
+      `retry-decision silent-eligible BLOCKED:hasPayload | traceId=${traceId} payloadCount=${params.payloadCount}`,
+    );
     return false;
   }
-  if (joinAssistantTexts(params.attempt.assistantTexts).length > 0) {
+  const textLen = joinAssistantTexts(params.attempt.assistantTexts).length;
+  if (textLen > 0) {
+    log.warn(
+      `retry-decision silent-eligible BLOCKED:hasText | traceId=${traceId} textLen=${textLen}`,
+    );
     return false;
   }
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
   if (!assistant || assistant.stopReason === "error") {
+    log.warn(
+      `retry-decision silent-eligible BLOCKED:noAssistantOrError | traceId=${traceId} hasAssistant=${!!assistant} stopReason=${assistant?.stopReason ?? "n/a"}`,
+    );
     return false;
   }
   if (
@@ -467,9 +498,36 @@ function isNonVisibleAssistantTurnEligibleForSilentReply(params: {
       lastAssistant: assistant,
     })
   ) {
+    log.warn(`retry-decision silent-eligible BLOCKED:incompleteTerminal | traceId=${traceId}`);
     return false;
   }
-  return isReasoningOnlyAssistantTurn(assistant);
+  const isReasoningOnly = isReasoningOnlyAssistantTurn(assistant);
+  // DeepSeek V4: reasoning-only is a bug, not intentional silence — don't block retry
+  if (isReasoningOnly && params.modelId && /deepseek-v4/i.test(params.modelId)) {
+    log.warn(
+      `retry-decision silent-eligible BLOCKED:deepseek-reasoning | traceId=${traceId} modelId=${params.modelId}`,
+    );
+    return false;
+  }
+  log.warn(
+    `retry-decision silent-eligible RESULT | traceId=${traceId} isReasoningOnly=${isReasoningOnly}`,
+  );
+  return isReasoningOnly;
+}
+
+function shouldSkipReasoningOnlyRetry(params: {
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): boolean {
+  return Boolean(
+    params.aborted ||
+    params.timedOut ||
+    params.attempt.clientToolCalls ||
+    params.attempt.yieldDetected ||
+    params.attempt.didSendDeterministicApprovalPrompt ||
+    params.attempt.lastToolError,
+  );
 }
 
 function shouldSkipPlanningOnlyRetry(params: {
@@ -490,21 +548,34 @@ function shouldSkipPlanningOnlyRetry(params: {
 
 export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   allowEmptyAssistantReplyAsSilent?: boolean;
+  modelId?: string;
   payloadCount: number;
   aborted: boolean;
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
+  diagnosticTrace?: Record<string, unknown> | null;
 }): boolean {
+  const traceId = params.diagnosticTrace?.traceId ?? "none";
   if (!params.allowEmptyAssistantReplyAsSilent || shouldSkipPlanningOnlyRetry(params)) {
+    log.warn(
+      `retry-decision silent-reply BLOCKED:entry | traceId=${traceId} allowEmptyAssistantReplyAsSilent=${params.allowEmptyAssistantReplyAsSilent} payloadCount=${params.payloadCount}`,
+    );
     return false;
   }
   if (hasCommittedMessagingToolDeliveryEvidence(params.attempt)) {
+    log.warn(`retry-decision silent-reply BLOCKED:messagingEvidence | traceId=${traceId}`);
     return false;
   }
-  return isNonVisibleAssistantTurnEligibleForSilentReply({
+  const eligible = isNonVisibleAssistantTurnEligibleForSilentReply({
+    modelId: params.modelId,
     payloadCount: params.payloadCount,
     attempt: params.attempt,
+    diagnosticTrace: params.diagnosticTrace,
   });
+  log.warn(
+    `retry-decision silent-reply RESULT | traceId=${traceId} allowEmptyAssistantReplyAsSilent=${params.allowEmptyAssistantReplyAsSilent} eligible=${eligible}`,
+  );
+  return eligible;
 }
 
 export function resolveReasoningOnlyRetryInstruction(params: {
@@ -514,12 +585,20 @@ export function resolveReasoningOnlyRetryInstruction(params: {
   executionContract?: string;
   aborted: boolean;
   timedOut: boolean;
+  diagnosticTrace?: Record<string, unknown>;
   attempt: IncompleteTurnAttempt;
 }): string | null {
-  if (shouldSkipPlanningOnlyRetry(params)) {
+  // Layer 1: shouldSkip
+  if (shouldSkipReasoningOnlyRetry(params)) {
+    log.warn(
+      `reasoning-only retry BLOCKED:shouldSkip | traceId=${params.diagnosticTrace?.traceId ?? "?"} aborted=${params.aborted} timedOut=${params.timedOut} ` +
+        `clientToolCalls=${!!params.attempt.clientToolCalls} yieldDetected=${!!params.attempt.yieldDetected} ` +
+        `didSendApproval=${!!params.attempt.didSendDeterministicApprovalPrompt} lastToolError=${!!params.attempt.lastToolError}`,
+    );
     return null;
   }
 
+  // Layer 2: guard check
   if (
     !shouldApplyNonVisibleTurnRetryGuard({
       provider: params.provider,
@@ -528,20 +607,66 @@ export function resolveReasoningOnlyRetryInstruction(params: {
       executionContract: params.executionContract,
     })
   ) {
+    log.warn(
+      `reasoning-only retry BLOCKED:guard | traceId=${params.diagnosticTrace?.traceId ?? "?"} provider=${params.provider ?? "?"} model=${params.modelId ?? "?"} ` +
+        `modelApi=${params.modelApi ?? "?"} executionContract=${params.executionContract ?? "?"}`,
+    );
     return null;
   }
 
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
-  if (joinAssistantTexts(params.attempt.assistantTexts).length > 0) {
-    return null;
-  }
-  if (assistant?.stopReason === "error") {
-    return null;
-  }
-  if (!isReasoningOnlyAssistantTurn(assistant)) {
+
+  // Layer 3: has assistant text (current turn only, not accumulated)
+  const hasCurrentText = (assistant?.content ?? []).some((c) => c?.type === "text");
+  if (hasCurrentText) {
+    const currentContents = (assistant?.content ?? [])
+      .map(
+        (c) =>
+          `${c?.type ?? "?"}:${JSON.stringify(((c as any)?.text ?? c)?.toString() ?? "").slice(0, 200)}`,
+      )
+      .join(" | ");
+    const currentContentTypes =
+      (assistant?.content ?? []).map((c) => c?.type ?? typeof c).join(",") || "none";
+    log.warn(
+      `reasoning-only retry BLOCKED:hasText | traceId=${params.diagnosticTrace?.traceId ?? "?"} ` +
+        `hasCurrentText=true currentContentTypes=[${currentContentTypes}] currentContents=[${currentContents}]`,
+    );
     return null;
   }
 
+  // Layer 4: stop error
+  if (assistant?.stopReason === "error") {
+    log.warn(
+      `reasoning-only retry BLOCKED:error | traceId=${params.diagnosticTrace?.traceId ?? "?"} stopReason=${assistant.stopReason}`,
+    );
+    return null;
+  }
+
+  // Layer 5: not reasoning-only
+  if (!isReasoningOnlyAssistantTurn(assistant)) {
+    const assessment = assistant ? assessLastAssistantMessage(assistant) : "no-assistant";
+    const contentBlockTypes =
+      assistant?.content?.map((b) => b?.type ?? typeof b).join(",") ?? "none";
+    log.warn(
+      `reasoning-only retry BLOCKED:notReasoningOnly | traceId=${params.diagnosticTrace?.traceId ?? "?"} assessment=${assessment} contentBlockTypes=[${contentBlockTypes}] ` +
+        `hasAssistant=${!!assistant}`,
+    );
+    return null;
+  }
+
+  // DeepSeek V4 rejects requests ending with assistant messages when tools are
+  // defined ("Function call should not be used with prefix"). Return an empty
+  // string so the retry loop fires but no instruction is appended to the prompt.
+  if (params.modelId && /deepseek-v4/i.test(params.modelId)) {
+    log.warn(
+      `reasoning-only retry TRIGGERED (silent) | traceId=${params.diagnosticTrace?.traceId ?? "?"} provider=${params.provider ?? "?"} model=${params.modelId ?? "?"} — retrying without instruction to avoid DeepSeek prefix error`,
+    );
+    return "";
+  }
+
+  log.warn(
+    `reasoning-only retry TRIGGERED | traceId=${params.diagnosticTrace?.traceId ?? "?"} provider=${params.provider ?? "?"} model=${params.modelId ?? "?"}`,
+  );
   return REASONING_ONLY_RETRY_INSTRUCTION;
 }
 
@@ -554,8 +679,11 @@ export function resolveEmptyResponseRetryInstruction(params: {
   aborted: boolean;
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
+  diagnosticTrace?: Record<string, unknown> | null;
 }): string | null {
+  const traceId = params.diagnosticTrace?.traceId ?? "none";
   if (shouldSkipPlanningOnlyRetry(params)) {
+    log.warn(`retry-decision empty-resolve BLOCKED:shouldSkip | traceId=${traceId}`);
     return null;
   }
 
@@ -563,8 +691,10 @@ export function resolveEmptyResponseRetryInstruction(params: {
     !isEmptyResponseAssistantTurn({
       payloadCount: params.payloadCount,
       attempt: params.attempt,
+      diagnosticTrace: params.diagnosticTrace,
     })
   ) {
+    log.warn(`retry-decision empty-resolve BLOCKED:hasResponse | traceId=${traceId}`);
     return null;
   }
 
@@ -575,6 +705,7 @@ export function resolveEmptyResponseRetryInstruction(params: {
       normalizeLowercaseStringOrEmpty(params.provider ?? ""),
     )
   ) {
+    log.warn(`retry-decision empty-resolve BLOCKED:ollama | traceId=${traceId}`);
     return null;
   }
 
@@ -590,9 +721,11 @@ export function resolveEmptyResponseRetryInstruction(params: {
     // provider allowlist above.
     isZeroUsageEmptyStopAssistantTurn(assistant)
   ) {
+    log.warn(`retry-decision empty-resolve TRIGGERED | traceId=${traceId}`);
     return EMPTY_RESPONSE_RETRY_INSTRUCTION;
   }
 
+  log.warn(`retry-decision empty-resolve BLOCKED:noGuard | traceId=${traceId}`);
   return null;
 }
 
@@ -818,7 +951,9 @@ export function resolvePlanningOnlyRetryInstruction(params: {
   aborted: boolean;
   timedOut: boolean;
   attempt: PlanningOnlyAttempt;
+  diagnosticTrace?: Record<string, unknown> | null;
 }): string | null {
+  const traceId = params.diagnosticTrace?.traceId ?? "none";
   const planOnlyToolMetaCount = countPlanOnlyToolMetas(params.attempt.toolMetas);
   const singleActionNarrative = isSingleActionThenNarrativePattern({
     toolMetas: params.attempt.toolMetas,
@@ -845,20 +980,28 @@ export function resolvePlanningOnlyRetryInstruction(params: {
       !allowSingleActionRetryBypass) ||
     resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects
   ) {
+    log.warn(`retry-decision plan-resolve BLOCKED:guard | traceId=${traceId}`);
     return null;
   }
 
   const stopReason = params.attempt.lastAssistant?.stopReason;
   if (stopReason && stopReason !== "stop") {
+    log.warn(
+      `retry-decision plan-resolve BLOCKED:stopReason | traceId=${traceId} stopReason=${stopReason}`,
+    );
     return null;
   }
 
   const text = (params.attempt.assistantTexts ?? []).join("\n\n").trim();
   if (!text || text.length > PLANNING_ONLY_MAX_VISIBLE_TEXT || text.includes("```")) {
+    log.warn(
+      `retry-decision plan-resolve BLOCKED:text | traceId=${traceId} textLen=${text.length} hasBacktick=${text.includes("```")}`,
+    );
     return null;
   }
   const hasStructuredPlanningFormat = hasStructuredPlanningOnlyFormat(text);
   if (!PLANNING_ONLY_PROMISE_RE.test(text) && !hasStructuredPlanningFormat) {
+    log.warn(`retry-decision plan-resolve BLOCKED:noPlanPattern | traceId=${traceId}`);
     return null;
   }
   if (
@@ -866,10 +1009,13 @@ export function resolvePlanningOnlyRetryInstruction(params: {
     !singleActionNarrative &&
     !PLANNING_ONLY_ACTION_VERB_RE.test(text)
   ) {
+    log.warn(`retry-decision plan-resolve BLOCKED:noActionVerb | traceId=${traceId}`);
     return null;
   }
   if (PLANNING_ONLY_COMPLETION_RE.test(text)) {
+    log.warn(`retry-decision plan-resolve BLOCKED:completionPattern | traceId=${traceId}`);
     return null;
   }
+  log.warn(`retry-decision plan-resolve TRIGGERED | traceId=${traceId}`);
   return PLANNING_ONLY_RETRY_INSTRUCTION;
 }

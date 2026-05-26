@@ -4644,6 +4644,7 @@ export async function runEmbeddedAttempt(
         (silentToolResultReplyPayload ? 1 : 0);
       const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
         allowEmptyAssistantReplyAsSilent: params.allowEmptyAssistantReplyAsSilent,
+        modelId: params.modelId,
         payloadCount: 0,
         aborted,
         timedOut,
@@ -4663,7 +4664,11 @@ export async function runEmbeddedAttempt(
           promptErrorSource,
           timedOutDuringCompaction,
         },
+        diagnosticTrace: diagnosticTrace as Record<string, unknown> | undefined | null,
       });
+      log.warn(
+        `retry-decision pipeline entry (attempt.ts) | traceId=${(diagnosticTrace as Record<string, unknown> | undefined)?.traceId ?? "none"} allowEmptyAssistantReplyAsSilent=${params.allowEmptyAssistantReplyAsSilent} payloadCount=0 emptyAssistantReplyIsSilent=${emptyAssistantReplyIsSilent}`,
+      );
       const terminalAssistantTexts = resolveTerminalAssistantTexts({
         assistantTexts,
         lastAssistantStopReason: lastAssistant?.stopReason,

@@ -391,11 +391,6 @@ async function runDeferredTurnMaintenanceWorker(params: {
   let longRunningTimer: ReturnType<typeof setTimeout> | null = null;
   const shutdownAbort = createDeferredTurnMaintenanceAbortSignal();
   const surfaceMaintenanceUpdate = (summary: string, eventSummary: string) => {
-    promoteTurnMaintenanceTaskVisibility({
-      sessionKey: params.sessionKey,
-      runId: params.runId,
-      notifyPolicy: "state_changes",
-    });
     surfacedUserNotice = true;
     recordTaskRunProgressByRunId({
       runId: params.runId,
