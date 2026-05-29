@@ -3359,6 +3359,32 @@ export function buildOpenAICompletionsParams(
   process.stderr.write(
     `[DS-V4-RC] step=pre-convert tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} rawMsgCount=${rawInput.length} rawTb=${rawTbCount} tbBlk=${tbFromBlk} tbCtx=${tbFromCtx}\n`,
   );
+  // PATCH: reasoning_content preservation — restore provider/model on DS V4 messages
+  // LCM stores thinking blocks but not model metadata. Without provider/model,
+  // transformMessages sees isSameModel=false and converts thinking→text.
+  // Match by thinking signature (same for deepseek and openrouter compat paths).
+  // Only activate when the current request model is DeepSeek V4.
+  const modelId = (model as any).id ?? "";
+  if (modelId.includes("deepseek-v4")) {
+    for (const msg of completionsContext.messages) {
+      if ((msg as any).role !== "assistant") continue;
+      const content = (msg as any).content;
+      if (!Array.isArray(content)) continue;
+      const hasDsThinking = content.some(
+        (b: any) =>
+          b.type === "thinking" &&
+          (b.thinkingSignature === "reasoning_details" ||
+            b.thinkingSignature === "reasoning"),
+      );
+      if (hasDsThinking) {
+        (msg as any).provider = (model as any).provider ?? "deepseek";
+        (msg as any).api = (model as any).api ?? "openai-completions";
+        if (!(msg as any).model) {
+          (msg as any).model = (model as any).id ?? "deepseek/deepseek-v4-pro";
+        }
+      }
+    }
+  }
   let messages = convertMessages(model as never, completionsContext, compat as never);
   // PATCH: DS V4 log post-convert (BEFORE injectToolCallThoughtSignatures)
   if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
