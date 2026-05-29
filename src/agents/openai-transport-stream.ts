@@ -3365,11 +3365,17 @@ export function buildOpenAICompletionsParams(
   // Match by thinking signature (same for deepseek and openrouter compat paths).
   // Only activate when the current request model is DeepSeek V4.
   const modelId = (model as any).id ?? "";
+  let patchMatched = 0,
+    patchSkipped = 0,
+    patchFailed = 0;
   if (modelId.includes("deepseek-v4")) {
     for (const msg of completionsContext.messages) {
       if ((msg as any).role !== "assistant") continue;
       const content = (msg as any).content;
-      if (!Array.isArray(content)) continue;
+      if (!Array.isArray(content)) {
+        patchSkipped++;
+        continue;
+      }
       const hasDsThinking = content.some(
         (b: any) =>
           b.type === "thinking" &&
@@ -3377,24 +3383,42 @@ export function buildOpenAICompletionsParams(
             b.thinkingSignature === "reasoning"),
       );
       if (hasDsThinking) {
+        const origProv = (msg as any).provider;
         (msg as any).provider = (model as any).provider ?? "deepseek";
         (msg as any).api = (model as any).api ?? "openai-completions";
         if (!(msg as any).model) {
           (msg as any).model = (model as any).id ?? "deepseek/deepseek-v4-pro";
         }
+        // Verify mutation stuck
+        if ((msg as any).provider === origProv && origProv !== undefined) {
+          patchFailed++;
+        } else {
+          patchMatched++;
+        }
       }
     }
+    process.stderr.write(
+      `[DS-V4-RC] step=patch-prov-match modelId=${modelId} matched=${patchMatched} skipped=${patchSkipped} failed=${patchFailed}\n`,
+    );
   }
   let messages = convertMessages(model as never, completionsContext, compat as never);
   // PATCH: DS V4 log post-convert (BEFORE injectToolCallThoughtSignatures)
+  // Check ALL possible reasoning field names (reasoning, reasoning_details, reasoning_content)
   if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
     let rdCvt = 0,
       rcCvt = 0,
+      rCvt = 0,
       totalAsst = 0;
+    let firstKeys = "none";
     for (const m of messages) {
       if (!m || typeof m !== "object") continue;
       if ((m as any).role === "assistant") {
         totalAsst++;
+        if (firstKeys === "none") {
+          firstKeys = JSON.stringify(
+            Object.keys(m as object).filter((k) => k.startsWith("reasoning")),
+          );
+        }
         const rd = (m as any).reasoning_details;
         if (typeof rd === "string" && rd.length > 0) rdCvt++;
         else if (
@@ -3403,15 +3427,14 @@ export function buildOpenAICompletionsParams(
         )
           rdCvt++;
         else if (rd !== undefined && rd !== null) rdCvt++;
-        if (
-          typeof (m as any).reasoning_content === "string" &&
-          (m as any).reasoning_content.length > 0
-        )
-          rcCvt++;
+        const rc = (m as any).reasoning_content;
+        if (typeof rc === "string" && rc.length > 0) rcCvt++;
+        const r = (m as any).reasoning;
+        if (typeof r === "string" && r.length > 0) rCvt++;
       }
     }
     process.stderr.write(
-      `[DS-V4-RC] step=post-convert tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} msgs=${messages.length} asst=${totalAsst} rd_nempty=${rdCvt} rc_nempty=${rcCvt}\n`,
+      `[DS-V4-RC] step=post-convert tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} msgs=${messages.length} asst=${totalAsst} rd=${rdCvt} rc=${rcCvt} r=${rCvt} firstReasoningKeys=${firstKeys}\n`,
     );
   }
   injectToolCallThoughtSignatures(messages as unknown[], context, model);
@@ -3476,21 +3499,30 @@ export function buildOpenAICompletionsParams(
       `[DS-V4-RC] step=post-inject tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} msgs=${messages.length} asst=${asstInj} rd_nempty=${rdNonEmpty} rc_nempty=${rcNonEmpty} tbCtx=${tbFromCtx} tbNE=${tbNonEmpty} firstSig=${firstSig}\n`,
     );
   }
-  // PATCH: DS V4 reasoning_details → reasoning_content remap
-  // OpenRouter SSE delta has reasoning_details → thinking block gets that signature →
-  // convertMessages uses signature as field name → reasoning_details appears in assistant msg.
-  // DeepSeek V4 needs reasoning_content for replay, not reasoning_details.
-  // MUST run before sanitize — sanitizeReasoningContentReplayFields unconditionally
-  // deletes reasoning_details, so we must remap first.
+  // PATCH: DS V4 reasoning → reasoning_content remap
+  // convertMessages writes reasoning as the signature-derived field name:
+  //   signature="reasoning_details" → field `reasoning_details` (direct deepseek path)
+  //   signature="reasoning"         → field `reasoning`        (openrouter path)
+  // DeepSeek V4 requires reasoning_content for replay.
+  // MUST run before sanitize — sanitizeReasoningContentReplayFields
+  // unconditionally deletes reasoning_details + reasoning.
   if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
     for (const msg of messages) {
       if (!msg || typeof msg !== "object") continue;
       const record = msg as unknown as Record<string, unknown>;
       if (record.role !== "assistant") continue;
-      const details = record.reasoning_details;
-      if (typeof details === "string" && details.length > 0 && !record.reasoning_content) {
-        record.reasoning_content = details;
-        delete record.reasoning_details;
+      if (!record.reasoning_content) {
+        const rd = record.reasoning_details;
+        if (typeof rd === "string" && rd.length > 0) {
+          record.reasoning_content = rd;
+          delete record.reasoning_details;
+        } else {
+          const r = record.reasoning;
+          if (typeof r === "string" && r.length > 0) {
+            record.reasoning_content = r;
+            delete record.reasoning;
+          }
+        }
       }
     }
   }
