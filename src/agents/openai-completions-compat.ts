@@ -54,9 +54,11 @@ export function resolveOpenAICompletionsCompatDefaults(
   const isZai =
     endpointClass === "zai-native" ||
     (isDefaultRoute && isDefaultRouteProvider(input.provider, "zai"));
+  // PATCH: deepseek-v4 proxy — recognize by provider name (mirrors isOpenRouterLike pattern)
   const isDeepSeek =
     endpointClass === "deepseek-native" ||
-    (isDefaultRoute && isDefaultRouteProvider(input.provider, "deepseek"));
+    (isDefaultRoute && isDefaultRouteProvider(input.provider, "deepseek")) ||
+    input.provider === "deepseek";
   const isTogether =
     knownProviderFamily === "together" ||
     (isDefaultRoute && isDefaultRouteProvider(input.provider, "together"));
@@ -75,6 +77,12 @@ export function resolveOpenAICompletionsCompatDefaults(
     (isDefaultRoute &&
       isDefaultRouteProvider(input.provider, "cerebras", "chutes", "deepseek", "opencode", "xai"));
   const isOpenRouterLike = input.provider === "openrouter" || endpointClass === "openrouter";
+  // PATCH: DS V4 log deepseek compat detection
+  if (provider === "deepseek") {
+    process.stderr.write(
+      `[DS-V4-RC-COMPAT] step=resolve-defaults provider=${provider} endpointClass=${endpointClass} knownFamily=${knownProviderFamily} isDefaultRoute=${isDefaultRoute} isORLike=${isOpenRouterLike} isDS=${isDeepSeek} visibleRT=${JSON.stringify(isOpenRouterLike ? ["response.output_text", "response.text"] : [])}\n`,
+    );
+  }
   const isLocalEndpoint = endpointClass === "local";
   const usesMaxTokens =
     endpointClass === "chutes-native" ||
@@ -147,6 +155,13 @@ export function detectOpenAICompletionsCompat(
         ? (model.compat as { supportsStore?: boolean })
         : undefined,
   });
+  // PATCH: DS V4 log model detection
+  if (model.provider === "deepseek") {
+    const cap = capabilities as any;
+    process.stderr.write(
+      `[DS-V4-RC-COMPAT] step=detect provider=${model.provider} modelId=${model.id} baseUrl=${model.baseUrl} endpointClass=${cap.endpointClass} knownFamily=${cap.knownProviderFamily}\n`,
+    );
+  }
   return {
     capabilities,
     defaults: resolveOpenAICompletionsCompatDefaultsFromCapabilities({

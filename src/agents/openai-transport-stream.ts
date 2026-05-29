@@ -24,6 +24,7 @@ import type {
   ResponseReasoningItem,
 } from "openai/resources/responses/responses.js";
 import type { ModelCompatConfig } from "../config/types.models.js";
+import { getActiveDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
 import { redactIdentifier } from "../logging/redact-identifier.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -2789,6 +2790,17 @@ function getCompletionsReasoningDeltas(
       }
     }
   }
+  // PATCH: DS V4 log reasoning delta processing
+  {
+    const rawTypes = Array.isArray(reasoningDetails)
+      ? (reasoningDetails as any[]).map((r) => r?.type)
+      : [];
+    if (rawTypes.includes("reasoning.text") || output.some((d) => d.kind === "thinking")) {
+      process.stderr.write(
+        `[DS-V4-RC-SSE] step=get-deltas rawTypes=${JSON.stringify(rawTypes)} visibleTypes=${JSON.stringify(visibleReasoningDetailTypes)} outputKinds=${JSON.stringify(output.map((d) => d.kind))}\n`,
+      );
+    }
+  }
   return output;
 }
 
@@ -2836,6 +2848,12 @@ function getCompat(model: OpenAIModeModel): {
 } {
   const detected = detectCompat(model);
   const compat = model.compat ?? {};
+  // PATCH: DS V4 log get-compat merge
+  if (detected.thinkingFormat === "deepseek") {
+    process.stderr.write(
+      `[DS-V4-RC-COMPAT] step=get-compat compatVrdt=${JSON.stringify((compat as any).visibleReasoningDetailTypes ?? "undef")} detectedVrdt=${JSON.stringify(detected.visibleReasoningDetailTypes)} compatTf=${(compat as any).thinkingFormat ?? "undef"} detectedTf=${detected.thinkingFormat}\n`,
+    );
+  }
   const supportsStore =
     typeof compat.supportsStore === "boolean" ? compat.supportsStore : detected.supportsStore;
   const supportsReasoningEffort =
@@ -3300,13 +3318,197 @@ export function buildOpenAICompletionsParams(
         systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt),
       }
     : context;
+  // PATCH: DS V4 log pre-convert (before convertMessages)
+  const rawInput = (completionsContext as any)?.messages ?? [];
+  // DIAGNOSTIC: sample provider on assistant messages
+  if (compat.thinkingFormat === "deepseek") {
+    const provCounts = new Map<string, number>();
+    let firstAsstProv = "none",
+      firstAsstModel = "none";
+    for (const mi of rawInput) {
+      if (mi?.role === "assistant") {
+        const p = (mi as any).provider ?? "undefined";
+        provCounts.set(p, (provCounts.get(p) ?? 0) + 1);
+        if (firstAsstProv === "none") {
+          firstAsstProv = p;
+          firstAsstModel = (mi as any).model ?? "undefined";
+        }
+      }
+    }
+    process.stderr.write(
+      `[DS-V4-RC] step=diag-providers modelProvider=${model.provider} firstAsst={prov:${firstAsstProv},model:${firstAsstModel}} provCounts=${JSON.stringify(Object.fromEntries(provCounts))}\n`,
+    );
+  }
+  let rawTbCount = 0,
+    tbFromBlk = 0,
+    tbFromCtx = 0;
+  for (const mi of rawInput) {
+    const tbs = mi?.thinkingBlocks ?? [];
+    tbFromBlk += tbs?.length ?? 0;
+    rawTbCount += tbs?.length ?? 0;
+    const content = mi?.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block?.type === "thinking") {
+          tbFromCtx++;
+          rawTbCount++;
+        }
+      }
+    }
+  }
+  process.stderr.write(
+    `[DS-V4-RC] step=pre-convert tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} rawMsgCount=${rawInput.length} rawTb=${rawTbCount} tbBlk=${tbFromBlk} tbCtx=${tbFromCtx}\n`,
+  );
   let messages = convertMessages(model as never, completionsContext, compat as never);
+  // PATCH: DS V4 log post-convert (BEFORE injectToolCallThoughtSignatures)
+  if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
+    let rdCvt = 0,
+      rcCvt = 0,
+      totalAsst = 0;
+    for (const m of messages) {
+      if (!m || typeof m !== "object") continue;
+      if ((m as any).role === "assistant") {
+        totalAsst++;
+        const rd = (m as any).reasoning_details;
+        if (typeof rd === "string" && rd.length > 0) rdCvt++;
+        else if (
+          Array.isArray(rd) &&
+          rd.some((r: any) => typeof r?.text === "string" && r.text.length > 0)
+        )
+          rdCvt++;
+        else if (rd !== undefined && rd !== null) rdCvt++;
+        if (
+          typeof (m as any).reasoning_content === "string" &&
+          (m as any).reasoning_content.length > 0
+        )
+          rcCvt++;
+      }
+    }
+    process.stderr.write(
+      `[DS-V4-RC] step=post-convert tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} msgs=${messages.length} asst=${totalAsst} rd_nempty=${rdCvt} rc_nempty=${rcCvt}\n`,
+    );
+  }
   injectToolCallThoughtSignatures(messages as unknown[], context, model);
+  // PATCH: DS V4 log thinking block status (same input as pre-convert)
+  let tbCount = 0;
+  for (const mi of rawInput) {
+    const tbs = mi?.thinkingBlocks ?? [];
+    tbCount += tbs?.length ?? 0;
+    const content = mi?.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block?.type === "thinking") tbCount++;
+      }
+    }
+  }
+  process.stderr.write(
+    `[DS-V4-RC] step=pre-logic tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} thinkingBlocks=${tbCount} thinkingFormat=${compat.thinkingFormat} visibleRT=${JSON.stringify(compat.visibleReasoningDetailTypes ?? "undef")} requiresRCAM=${(compat as any).requiresReasoningContentOnAssistantMessages ?? "undef"} requiresTAT=${(compat as any).requiresThinkingAsText ?? "undef"}\n`,
+  );
+  // PATCH: DS V4 log post-inject (AFTER injectToolCallThoughtSignatures)
+  if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
+    let rdNonEmpty = 0,
+      rcNonEmpty = 0,
+      asstInj = 0;
+    for (const m of messages) {
+      if (!m || typeof m !== "object") continue;
+      if ((m as any).role === "assistant") {
+        asstInj++;
+        const rd = (m as any).reasoning_details;
+        if (typeof rd === "string" && rd.length > 0) rdNonEmpty++;
+        else if (
+          Array.isArray(rd) &&
+          rd.some((r: any) => typeof r?.text === "string" && r.text.length > 0)
+        )
+          rdNonEmpty++;
+        else if (rd !== undefined && rd !== null) rdNonEmpty++;
+        if (
+          typeof (m as any).reasoning_content === "string" &&
+          (m as any).reasoning_content.length > 0
+        )
+          rcNonEmpty++;
+      }
+    }
+    // Count thinking blocks from context with non-empty text (pi-ai filter requires thinking text > 0)
+    let tbFromCtx = 0,
+      tbNonEmpty = 0,
+      firstSig = "none";
+    for (const mi of rawInput) {
+      const content = mi?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === "thinking") {
+            tbFromCtx++;
+            if (block?.thinking && String(block.thinking).trim().length > 0) {
+              tbNonEmpty++;
+              if (firstSig === "none") firstSig = String(block.thinkingSignature ?? "undef");
+            }
+          }
+        }
+      }
+    }
+    process.stderr.write(
+      `[DS-V4-RC] step=post-inject tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} msgs=${messages.length} asst=${asstInj} rd_nempty=${rdNonEmpty} rc_nempty=${rcNonEmpty} tbCtx=${tbFromCtx} tbNE=${tbNonEmpty} firstSig=${firstSig}\n`,
+    );
+  }
+  // PATCH: DS V4 reasoning_details → reasoning_content remap
+  // OpenRouter SSE delta has reasoning_details → thinking block gets that signature →
+  // convertMessages uses signature as field name → reasoning_details appears in assistant msg.
+  // DeepSeek V4 needs reasoning_content for replay, not reasoning_details.
+  // MUST run before sanitize — sanitizeReasoningContentReplayFields unconditionally
+  // deletes reasoning_details, so we must remap first.
+  if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
+    for (const msg of messages) {
+      if (!msg || typeof msg !== "object") continue;
+      const record = msg as unknown as Record<string, unknown>;
+      if (record.role !== "assistant") continue;
+      const details = record.reasoning_details;
+      if (typeof details === "string" && details.length > 0 && !record.reasoning_content) {
+        record.reasoning_content = details;
+        delete record.reasoning_details;
+      }
+    }
+  }
+  // PATCH: DS V4 log post-remap
+  if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
+    let rcNonEmpty = 0;
+    for (const m of messages) {
+      if (!m || typeof m !== "object" || (m as any).role !== "assistant") continue;
+      if (
+        typeof (m as any).reasoning_content === "string" &&
+        (m as any).reasoning_content.length > 0
+      )
+        rcNonEmpty++;
+    }
+    process.stderr.write(
+      `[DS-V4-RC] step=post-remap tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} msgs=${messages.length} rc_nempty=${rcNonEmpty}\n`,
+    );
+  }
   sanitizeCompletionsReasoningReplayFields(messages, {
     preserveOpenRouterReasoning:
       compat.thinkingFormat === "openrouter" && shouldPreserveOpenRouterReasoningReplay(model),
     preserveReasoningContent: shouldPreserveReasoningContentReplay(model, compat),
   });
+  // PATCH: DS V4 log post-sanitize
+  if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
+    let rdNonEmpty = 0,
+      rcNonEmpty = 0;
+    for (const m of messages) {
+      if (!m || typeof m !== "object" || (m as any).role !== "assistant") continue;
+      if (
+        typeof (m as any).reasoning_details === "string" &&
+        (m as any).reasoning_details.length > 0
+      )
+        rdNonEmpty++;
+      if (
+        typeof (m as any).reasoning_content === "string" &&
+        (m as any).reasoning_content.length > 0
+      )
+        rcNonEmpty++;
+    }
+    process.stderr.write(
+      `[DS-V4-RC] step=post-sanitize tid=${getActiveDiagnosticTraceContext()?.traceId ?? "none"} sid=${(options as any)?.sessionId ?? "none"} msgs=${messages.length} rd_nempty=${rdNonEmpty} rc_nempty=${rcNonEmpty}\n`,
+    );
+  }
   if (compat.strictMessageKeys) {
     messages = stripCompletionMessagesToRoleContent(messages) as typeof messages;
   }

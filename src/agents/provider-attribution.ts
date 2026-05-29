@@ -744,6 +744,13 @@ export function resolveProviderRequestCapabilities(
 
   const manifestProviderRequest = resolveManifestProviderRequest(provider);
   const compatibilityFamily = manifestProviderRequest?.compatibilityFamily;
+  // PATCH: DS V4 log endpointClass detection
+  const _ds4capProvider = provider;
+  if (_ds4capProvider === "deepseek") {
+    process.stderr.write(
+      `[DS-V4-RC-COMPAT] step=provider-capabilities provider=${_ds4capProvider} baseUrl=${input.baseUrl} endpointClass=${endpointClass} compatibilityFamily=${compatibilityFamily ?? "undef"}\n`,
+    );
+  }
 
   const isResponsesApi = isOpenAIResponsesApi(api);
   const promptCacheKeySupport = readCompatBoolean(input.compat, "supportsPromptCacheKey");
