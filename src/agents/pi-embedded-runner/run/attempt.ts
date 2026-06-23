@@ -4441,6 +4441,12 @@ export async function runEmbeddedAttempt(
                 success: !aborted && !promptError,
                 error: promptError ? formatErrorMessage(promptError) : undefined,
                 durationMs: Date.now() - promptStartedAt,
+                // PATCH: turn-footer plugin | pass raw usage data from agent runner to plugin hook
+                usage: attemptUsage,
+                lastCallUsage,
+                systemPromptReport,
+                contextTokenBudget: params.contextTokenBudget,
+                model: params.modelId,
               },
               {
                 runId: params.runId,

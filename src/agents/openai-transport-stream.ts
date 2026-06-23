@@ -24,6 +24,7 @@ import type {
   ResponseReasoningItem,
 } from "openai/resources/responses/responses.js";
 import type { ModelCompatConfig } from "../config/types.models.js";
+import { getActiveDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
 import { redactIdentifier } from "../logging/redact-identifier.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -2789,6 +2790,19 @@ function getCompletionsReasoningDeltas(
       }
     }
   }
+  // PATCH: DS V4 log reasoning delta processing
+  {
+    const rawTypes = Array.isArray(reasoningDetails)
+      ? (reasoningDetails as any[]).map((r) => r?.type)
+      : [];
+    if (rawTypes.includes("reasoning.text") || output.some((d) => d.kind === "thinking")) {
+      if (process.env.OPENCLAW_DS_V4_RC_DEBUG) {
+        process.stderr.write(
+          `[DS-V4-RC-SSE] step=get-deltas rawTypes=${JSON.stringify(rawTypes)} visibleTypes=${JSON.stringify(visibleReasoningDetailTypes)} outputKinds=${JSON.stringify(output.map((d) => d.kind))}\n`,
+        );
+      }
+    }
+  }
   return output;
 }
 
@@ -3300,13 +3314,105 @@ export function buildOpenAICompletionsParams(
         systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt),
       }
     : context;
+  // PATCH: DS V4 — collect context metrics before patch (for debug summary only)
+  const rawInput = (completionsContext as any)?.messages ?? [];
+  // PATCH: reasoning_content preservation — restore provider/model on DS V4 messages
+  // LCM stores thinking blocks but not model metadata. Without provider/model,
+  // transformMessages sees isSameModel=false and converts thinking→text.
+  // Match by thinking signature (same for deepseek and openrouter compat paths).
+  // Only activate when the current request model is DeepSeek V4.
+  const modelId = (model as any).id ?? "";
+  let patchMatched = 0,
+    patchSkipped = 0,
+    patchFailed = 0;
+  if (modelId.includes("deepseek-v4")) {
+    for (const msg of completionsContext.messages) {
+      if ((msg as any).role !== "assistant") continue;
+      const content = (msg as any).content;
+      if (!Array.isArray(content)) {
+        patchSkipped++;
+        continue;
+      }
+      const hasDsThinking = content.some(
+        (b: any) =>
+          b.type === "thinking" &&
+          (b.thinkingSignature === "reasoning_details" ||
+            b.thinkingSignature === "reasoning"),
+      );
+      if (hasDsThinking) {
+        const origProv = (msg as any).provider;
+        (msg as any).provider = (model as any).provider ?? "deepseek";
+        (msg as any).api = (model as any).api ?? "openai-completions";
+        if (!(msg as any).model) {
+          (msg as any).model = (model as any).id ?? "deepseek/deepseek-v4-pro";
+        }
+        // Verify mutation stuck
+        if ((msg as any).provider === origProv && origProv !== undefined) {
+          patchFailed++;
+        } else {
+          patchMatched++;
+        }
+      }
+    }
+  }
   let messages = convertMessages(model as never, completionsContext, compat as never);
+  // PATCH: DS V4 count reasoning after convert (openrouter path produces `reasoning` field)
+  let rCvt = 0;
+  if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
+    for (const m of messages) {
+      if (!m || typeof m !== "object" || (m as any).role !== "assistant") continue;
+      const r = (m as any).reasoning;
+      if (typeof r === "string" && r.length > 0) rCvt++;
+    }
+  }
   injectToolCallThoughtSignatures(messages as unknown[], context, model);
+  // PATCH: DS V4 reasoning → reasoning_content remap
+  // convertMessages writes reasoning as the signature-derived field name:
+  //   signature="reasoning_details" → field `reasoning_details` (direct deepseek path)
+  //   signature="reasoning"         → field `reasoning`        (openrouter path)
+  // DeepSeek V4 requires reasoning_content for replay.
+  // MUST run before sanitize — sanitizeReasoningContentReplayFields
+  // unconditionally deletes reasoning_details + reasoning.
+  if (compat.thinkingFormat === "deepseek" && Array.isArray(messages)) {
+    for (const msg of messages) {
+      if (!msg || typeof msg !== "object") continue;
+      const record = msg as unknown as Record<string, unknown>;
+      if (record.role !== "assistant") continue;
+      if (!record.reasoning_content) {
+        const rd = record.reasoning_details;
+        if (typeof rd === "string" && rd.length > 0) {
+          record.reasoning_content = rd;
+          delete record.reasoning_details;
+        } else {
+          const r = record.reasoning;
+          if (typeof r === "string" && r.length > 0) {
+            record.reasoning_content = r;
+            delete record.reasoning;
+          }
+        }
+      }
+    }
+  }
   sanitizeCompletionsReasoningReplayFields(messages, {
     preserveOpenRouterReasoning:
       compat.thinkingFormat === "openrouter" && shouldPreserveOpenRouterReasoningReplay(model),
     preserveReasoningContent: shouldPreserveReasoningContentReplay(model, compat),
   });
+  // PATCH: DS V4 debug summary (env: OPENCLAW_DS_V4_RC_DEBUG=1)
+  if (process.env.OPENCLAW_DS_V4_RC_DEBUG && modelId.includes("deepseek-v4") && Array.isArray(messages)) {
+    let rcSanitized = 0;
+    for (const m of messages) {
+      if (!m || typeof m !== "object" || (m as any).role !== "assistant") continue;
+      if (
+        typeof (m as any).reasoning_content === "string" &&
+        (m as any).reasoning_content.length > 0
+      )
+        rcSanitized++;
+    }
+    process.stderr.write(
+      `[DS-V4-RC] model=${modelId} msgs=${messages.length} patch=${patchMatched}/${patchSkipped}/${patchFailed} r=${rCvt} rc=${rcSanitized}\n`,
+    );
+  }
   if (compat.strictMessageKeys) {
     messages = stripCompletionMessagesToRoleContent(messages) as typeof messages;
   }
