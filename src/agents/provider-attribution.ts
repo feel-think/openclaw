@@ -744,9 +744,9 @@ export function resolveProviderRequestCapabilities(
 
   const manifestProviderRequest = resolveManifestProviderRequest(provider);
   const compatibilityFamily = manifestProviderRequest?.compatibilityFamily;
-  // PATCH: DS V4 log endpointClass detection
+  // PATCH: DS V4 log endpointClass detection (env: OPENCLAW_DS_V4_RC_DEBUG=1)
   const _ds4capProvider = provider;
-  if (_ds4capProvider === "deepseek") {
+  if (_ds4capProvider === "deepseek" && process.env.OPENCLAW_DS_V4_RC_DEBUG) {
     process.stderr.write(
       `[DS-V4-RC-COMPAT] step=provider-capabilities provider=${_ds4capProvider} baseUrl=${input.baseUrl} endpointClass=${endpointClass} compatibilityFamily=${compatibilityFamily ?? "undef"}\n`,
     );

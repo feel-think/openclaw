@@ -77,8 +77,8 @@ export function resolveOpenAICompletionsCompatDefaults(
     (isDefaultRoute &&
       isDefaultRouteProvider(input.provider, "cerebras", "chutes", "deepseek", "opencode", "xai"));
   const isOpenRouterLike = input.provider === "openrouter" || endpointClass === "openrouter";
-  // PATCH: DS V4 log deepseek compat detection
-  if (provider === "deepseek") {
+  // PATCH: DS V4 log deepseek compat detection (env: OPENCLAW_DS_V4_RC_DEBUG=1)
+  if (provider === "deepseek" && process.env.OPENCLAW_DS_V4_RC_DEBUG) {
     process.stderr.write(
       `[DS-V4-RC-COMPAT] step=resolve-defaults provider=${provider} endpointClass=${endpointClass} knownFamily=${knownProviderFamily} isDefaultRoute=${isDefaultRoute} isORLike=${isOpenRouterLike} isDS=${isDeepSeek} visibleRT=${JSON.stringify(isOpenRouterLike ? ["response.output_text", "response.text"] : [])}\n`,
     );
@@ -155,8 +155,8 @@ export function detectOpenAICompletionsCompat(
         ? (model.compat as { supportsStore?: boolean })
         : undefined,
   });
-  // PATCH: DS V4 log model detection
-  if (model.provider === "deepseek") {
+  // PATCH: DS V4 log model detection (env: OPENCLAW_DS_V4_RC_DEBUG=1)
+  if (model.provider === "deepseek" && process.env.OPENCLAW_DS_V4_RC_DEBUG) {
     const cap = capabilities as any;
     process.stderr.write(
       `[DS-V4-RC-COMPAT] step=detect provider=${model.provider} modelId=${model.id} baseUrl=${model.baseUrl} endpointClass=${cap.endpointClass} knownFamily=${cap.knownProviderFamily}\n`,
