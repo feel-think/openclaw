@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
 import { OPENROUTER_THINKING_STREAM_HOOKS } from "openclaw/plugin-sdk/provider-stream-family";
@@ -16,6 +19,30 @@ import {
 } from "./provider-catalog.js";
 
 const log = createSubsystemLogger("openrouter-stream");
+
+// ---- session key resolution ----
+
+const SESSIONS_BASE = join(homedir(), ".openclaw", "agents");
+
+function resolveSessionKey(sessionId: string): string | undefined {
+  const agentDirs = ["main", "chat"];
+  for (const dir of agentDirs) {
+    const sessionsPath = join(SESSIONS_BASE, dir, "sessions", "sessions.json");
+    if (!existsSync(sessionsPath)) continue;
+    try {
+      const raw = readFileSync(sessionsPath, "utf-8");
+      const data = JSON.parse(raw) as Record<string, { sessionId?: string }>;
+      for (const [sessionKey, entry] of Object.entries(data)) {
+        if (entry?.sessionId === sessionId) {
+          return sessionKey;
+        }
+      }
+    } catch {
+      // missing or corrupt — skip
+    }
+  }
+  return undefined;
+}
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" ? value.trim() : undefined;
@@ -208,20 +235,37 @@ export function wrapOpenRouterProviderStream(
     ? injectOpenRouterRouting(ctx.streamFn, providerRouting)
     : ctx.streamFn;
   const wrapStreamFn = OPENROUTER_THINKING_STREAM_HOOKS.wrapStreamFn ?? undefined;
+  let baseStreamFn: StreamFn | undefined;
   if (!wrapStreamFn) {
-    return createOpenRouterAnthropicPrefillWrapper(
+    baseStreamFn = createOpenRouterAnthropicPrefillWrapper(
       createOpenRouterDeepSeekV4ThinkingWrapper(routedStreamFn, ctx.thinkingLevel),
     );
+  } else {
+    const wrappedStreamFn =
+      wrapStreamFn({
+        ...ctx,
+        streamFn: routedStreamFn,
+        thinkingLevel: isOpenRouterProxyReasoningUnsupportedModel(ctx.modelId)
+          ? undefined
+          : ctx.thinkingLevel,
+      }) ?? undefined;
+    baseStreamFn = createOpenRouterAnthropicPrefillWrapper(
+      createOpenRouterDeepSeekV4ThinkingWrapper(wrappedStreamFn, ctx.thinkingLevel),
+    );
   }
-  const wrappedStreamFn =
-    wrapStreamFn({
-      ...ctx,
-      streamFn: routedStreamFn,
-      thinkingLevel: isOpenRouterProxyReasoningUnsupportedModel(ctx.modelId)
-        ? undefined
-        : ctx.thinkingLevel,
-    }) ?? undefined;
-  return createOpenRouterAnthropicPrefillWrapper(
-    createOpenRouterDeepSeekV4ThinkingWrapper(wrappedStreamFn, ctx.thinkingLevel),
-  );
+  if (!baseStreamFn) return baseStreamFn;
+
+  // Wrap to inject session key header (sessionId UUID → sessionKey via sessions.json lookup)
+  return async (model, context, options) => {
+    const sessionId = (options as { sessionId?: unknown })?.sessionId;
+    if (typeof sessionId === "string" && sessionId) {
+      const sessionKey = resolveSessionKey(sessionId);
+      if (sessionKey) {
+        const headers = { ...(options?.headers as Record<string, string> | undefined) };
+        headers["x-openclaw-session"] = sessionKey;
+        return baseStreamFn!(model, context, { ...options, headers });
+      }
+    }
+    return baseStreamFn!(model, context, options);
+  };
 }
